@@ -10,6 +10,9 @@ import re
 import pyaudio
 import wave
 from dotenv import load_dotenv
+from pydub import AudioSegment
+import tempfile
+import math
 
 # Załaduj zmienne środowiskowe z pliku .env
 load_dotenv()
@@ -94,11 +97,98 @@ class MeetingSummarizer:
         print(f"✅ Nagranie zapisane jako: {filename}")
         return filename
 
+    def split_audio_file(self, audio_file: str, max_size_mb: int = 24) -> List[str]:
+        """
+        Dzieli plik audio na mniejsze części jeśli przekracza limit rozmiaru
+        
+        Args:
+            audio_file: Ścieżka do pliku audio
+            max_size_mb: Maksymalny rozmiar części w MB
+            
+        Returns:
+            Lista ścieżek do podzielonych plików
+        """
+        file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+        
+        if file_size_mb <= max_size_mb:
+            return [audio_file]
+        
+        print(f"📂 Plik audio ({file_size_mb:.1f}MB) przekracza limit {max_size_mb}MB. Dzielę na części...")
+        
+        # Załaduj plik audio
+        audio = AudioSegment.from_file(audio_file)
+        
+        # Oblicz długość każdej części (w milisekundach)
+        total_duration = len(audio)
+        num_parts = math.ceil(file_size_mb / max_size_mb)
+        part_duration = total_duration // num_parts
+        
+        # Podziel plik na części
+        parts = []
+        temp_dir = tempfile.mkdtemp()
+        
+        for i in range(num_parts):
+            start_time = i * part_duration
+            end_time = min((i + 1) * part_duration, total_duration)
+            
+            # Wytnij część audio
+            part = audio[start_time:end_time]
+            
+            # Zapisz część do pliku tymczasowego
+            part_filename = os.path.join(temp_dir, f"part_{i+1}.wav")
+            part.export(part_filename, format="wav")
+            parts.append(part_filename)
+            
+            print(f"✅ Utworzono część {i+1}/{num_parts}: {part_filename}")
+        
+        return parts
 
+    def transcribe_audio_parts(self, audio_parts: List[str]) -> str:
+        """
+        Transkrybuje wiele części audio i łączy wyniki
+        
+        Args:
+            audio_parts: Lista ścieżek do plików audio
+            
+        Returns:
+            Połączona transkrypcja
+        """
+        full_transcript = ""
+        
+        for i, part_file in enumerate(audio_parts, 1):
+            print(f"🤖 Transkrypcja części {i}/{len(audio_parts)}...")
+            
+            try:
+                with open(part_file, "rb") as audio:
+                    transcript = self.openai_client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio,
+                        language="pl"
+                    )
+                
+                part_text = transcript.text.strip()
+                if part_text:
+                    full_transcript += part_text + " "
+                    
+                print(f"✅ Część {i} ukończona")
+                
+            except Exception as e:
+                print(f"❌ Błąd transkrypcji części {i}: {e}")
+                continue
+        
+        # Usuń pliki tymczasowe
+        for part_file in audio_parts:
+            try:
+                if os.path.exists(part_file) and "temp" in part_file:
+                    os.remove(part_file)
+            except:
+                pass
+        
+        return full_transcript.strip()
 
     def transcribe_audio(self, audio_file: str) -> str:
         """
-        Transkrypcja używając OpenAI Whisper
+        Transkrypcja używając OpenAI Whisper z automatycznym dzieleniem dużych plików
         
         Args:
             audio_file: Ścieżka do pliku audio
@@ -106,20 +196,36 @@ class MeetingSummarizer:
         Returns:
             Transkrypcja spotkania
         """
-        print("🤖 Transkrypcja przez OpenAI Whisper...")
+        print("🤖 Rozpoczynam transkrypcję przez OpenAI Whisper...")
         
-        try:
-            with open(audio_file, "rb") as audio:
-                transcript = self.openai_client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio,
-                    language="pl"
-                )
-            print("✅ Transkrypcja ukończona")
-            return transcript.text
-        except Exception as e:
-            print(f"❌ Błąd transkrypcji OpenAI: {e}")
-            return ""
+        # Sprawdź rozmiar pliku i podziel jeśli potrzeba
+        audio_parts = self.split_audio_file(audio_file)
+        
+        if len(audio_parts) == 1:
+            # Pojedynczy plik - standardowa transkrypcja
+            try:
+                with open(audio_file, "rb") as audio:
+                    transcript = self.openai_client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio,
+                        language="pl"
+                    )
+                print("✅ Transkrypcja ukończona")
+                return transcript.text
+            except Exception as e:
+                print(f"❌ Błąd transkrypcji OpenAI: {e}")
+                return ""
+        else:
+            # Wiele części - transkrypcja każdej części
+            print(f"📝 Transkrypcja {len(audio_parts)} części...")
+            full_transcript = self.transcribe_audio_parts(audio_parts)
+            
+            if full_transcript:
+                print("✅ Transkrypcja wszystkich części ukończona")
+                return full_transcript
+            else:
+                print("❌ Nie udało się transkrybować żadnej części")
+                return ""
 
     def summarize_meeting(self, transcript: str) -> Dict:
         """
