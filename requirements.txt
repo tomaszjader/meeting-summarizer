@@ -1,0 +1,16 @@
+# Meeting Summarizer - Wymagane pakiety
+
+# OpenAI API dla transkrypcji i podsumowania
+openai>=0.27.0
+
+# Obsługa plików .env
+python-dotenv>=1.0.0
+
+# Audio recording i processing
+pyaudio>=0.2.11
+
+# Email functionality
+# (wbudowane w Python: smtplib, email)
+
+# Inne standardowe biblioteki (wbudowane w Python)
+# datetime, json, os, typing, re, wave
